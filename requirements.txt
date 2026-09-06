@@ -1,0 +1,19 @@
+fastapi==0.104.0
+uvicorn==0.24.0
+# sentence-transformers ≥ 2.7.0 provides both SentenceTransformer (bi-encoder)
+# and CrossEncoder (reranker). Models download automatically on first run:
+#   BAAI/bge-base-en-v1.5       — ~420 MB (bi-encoder embeddings)
+#   BAAI/bge-reranker-base      — ~280 MB (cross-encoder reranker)
+sentence-transformers>=2.7.0
+faiss-cpu==1.7.4
+ollama>=0.2.0
+python-dotenv==1.0.0
+pydantic==2.4.0
+pydantic-settings==2.1.0
+pdfplumber==0.10.3
+langchain-text-splitters==0.0.1
+python-multipart==0.0.6
+numpy>=1.24.0
+tqdm>=4.66.0
+pytest==7.4.0
+rank-bm25==0.2.2

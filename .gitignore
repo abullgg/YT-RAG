@@ -1,0 +1,117 @@
+# ─────────────────────────────────────────────
+# Python
+# ─────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+.installed.cfg
+MANIFEST
+.Python
+build/
+dist/
+develop-eggs/
+downloads/
+eggs/
+.eggs/
+/lib/
+/lib64/
+!frontend/lib/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+
+# ─────────────────────────────────────────────
+# Testing & Coverage
+# ─────────────────────────────────────────────
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+pytestdebuglog.txt
+
+# ─────────────────────────────────────────────
+# Virtual Environments
+# ─────────────────────────────────────────────
+.venv
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# ─────────────────────────────────────────────
+# Environment / Secrets
+# ─────────────────────────────────────────────
+.env
+.env.*
+.env.txt
+
+# ─────────────────────────────────────────────
+# IDE & Editor
+# ─────────────────────────────────────────────
+.idea/
+.vscode/
+.spyderproject
+.spyproject
+.ropeproject
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+cython_debug/
+.ipynb_checkpoints
+profile_default/
+ipython_config.py
+
+# ─────────────────────────────────────────────
+# Project Runtime Data
+# (keep the folder itself via .gitkeep)
+# ─────────────────────────────────────────────
+data/*
+!data/.gitkeep
+*.pkl
+*.bin
+
+# ─────────────────────────────────────────────
+# Logs
+# ─────────────────────────────────────────────
+*.log
+pip-log.txt
+pip-delete-this-directory.txt
+
+# ─────────────────────────────────────────────
+# OS
+# ─────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ─────────────────────────────────────────────
+# Node / Next.js
+# ─────────────────────────────────────────────
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+
+# ─────────────────────────────────────────────
+# Scratch / One-off scripts
+# ─────────────────────────────────────────────
+app.py
+query_whales.py
+debug_test.py
+persistence_tests.py
+*.txt
+!requirements.txt
