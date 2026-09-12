@@ -36,9 +36,10 @@ The BGE reranker family is consistent with our BGE bi-encoder embeddings:
 
 Scores
 ~~~~~~
-The cross-encoder outputs raw logit scores (unbounded floats). Higher means
-more relevant. We apply a sigmoid transform to normalise scores to (0, 1]
-before returning them, making them interpretable as relevance probabilities.
+The cross-encoder outputs raw logits (unbounded floats). Higher means more
+relevant. We apply an unbiased sigmoid solely to provide a bounded relevance
+signal for display and diagnostics. It is not a calibrated probability that a
+retrieved passage—or a generated answer—is correct.
 """
 
 import logging
@@ -51,6 +52,20 @@ from src.core.config import settings
 from src.utils.errors import RetrievalError
 
 logger = logging.getLogger(__name__)
+
+
+def logit_to_relevance_score(logit: float) -> float:
+    """Convert a reranker logit to a bounded, uncalibrated relevance signal.
+
+    This intentionally applies neither a bias nor temperature scaling: a
+    neutral logit maps to 0.5, negative logits below 0.5, and positive logits
+    above 0.5.  The result preserves ranking order but is not a probability of
+    answer correctness.
+    """
+    if logit >= 0:
+        return 1.0 / (1.0 + math.exp(-logit))
+    exp_logit = math.exp(logit)
+    return exp_logit / (1.0 + exp_logit)
 
 
 class CrossEncoderReranker:
@@ -91,7 +106,8 @@ class CrossEncoderReranker:
         Score and rerank candidate chunks for a given query.
 
         Each (query, chunk) pair is scored jointly by the cross-encoder.
-        Scores are normalised with sigmoid to the range (0, 1].
+        Scores are mapped with an unbiased sigmoid to a bounded relevance
+        signal. They are not calibrated probabilities.
 
         Args:
             query:   The user's question (raw text, no BGE prefix needed).
@@ -99,7 +115,7 @@ class CrossEncoderReranker:
             top_k:   Number of top-ranked chunks to return.
 
         Returns:
-            List of ``(chunk_text, normalised_score)`` tuples, sorted by
+            List of ``(chunk_text, relevance_score)`` tuples, sorted by
             score descending, truncated to ``top_k``.
 
         Raises:
@@ -125,15 +141,8 @@ class CrossEncoderReranker:
                 f"Cross-encoder prediction failed: {exc}"
             ) from exc
 
-        # Normalise raw logits → (0, 1] via sigmoid so scores are interpretable
-        # Apply temperature scaling and bias shift to boost non-prose document scores
-        def _sigmoid(x: float) -> float:
-            temperature_scaled = x * 1.5  # Spread the scores out
-            bias_shift = 1.0              # Push neutral 0.0 logs to positive
-            return 1.0 / (1.0 + math.exp(-(temperature_scaled + bias_shift)))
-
         scored: List[Tuple[str, float]] = [
-            (chunk, round(_sigmoid(float(score)), 4))
+            (chunk, round(logit_to_relevance_score(float(score)), 4))
             for chunk, score in zip(chunks, raw_scores)
         ]
 

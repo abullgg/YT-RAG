@@ -20,8 +20,8 @@ Confidence levels
     0.60 — title-cased short  (`Data Collection`)  — preceded by blank line AND
                                                        followed by non-blank line
 
-Default threshold: 0.75  (accepts Markdown, numbered, underlined; rejects the
-two weakest patterns unless explicitly lowered).
+Default threshold: 0.60  (accepts all documented patterns after their
+structural safeguards have passed).
 """
 
 from __future__ import annotations
@@ -70,6 +70,10 @@ _RE_UNDERLINE = re.compile(r"^[-=]{3,}$")
 # 4. Title-cased: starts with uppercase, length < 60, no trailing punctuation
 _RE_TITLE_CASE_BAD_END = re.compile(r"[,.:;!?]$")
 _ARTICLE_STARTERS = ("The ", "A ", "An ", "the ", "a ", "an ")
+_TITLE_CASE_CONNECTORS = {
+    "a", "an", "and", "as", "at", "by", "for", "from", "in", "of",
+    "on", "or", "the", "to", "vs", "with",
+}
 
 
 def _is_title_case_candidate(stripped: str) -> bool:
@@ -81,10 +85,18 @@ def _is_title_case_candidate(stripped: str) -> bool:
         return False
     if stripped.startswith(_ARTICLE_STARTERS):
         return False
-    # Reject if the line contains mostly lowercase (= sentence, not a heading)
+    # Reject long sentence-like lines. Then require actual title casing rather
+    # than only an uppercase first character; this prevents a short prose line
+    # after a blank paragraph from becoming a heading at the 0.60 threshold.
     words = stripped.split()
     if len(words) > 8:
         return False
+    for word in words:
+        letters = re.sub(r"[^A-Za-z]", "", word)
+        if not letters or letters.lower() in _TITLE_CASE_CONNECTORS:
+            continue
+        if not letters[0].isupper():
+            return False
     return True
 
 
@@ -98,10 +110,10 @@ class HeaderDetector:
 
     Args:
         confidence_threshold: Lines whose pattern confidence is below this
-            value are left unchanged. Default 0.75.
+            value are left unchanged. Default 0.60.
     """
 
-    def __init__(self, confidence_threshold: float = 0.75) -> None:
+    def __init__(self, confidence_threshold: float = 0.60) -> None:
         self.confidence_threshold = confidence_threshold
 
     # ------------------------------------------------------------------

@@ -2,7 +2,11 @@
 Hybrid Retriever
 ----------------
 Combines FAISS semantic search with BM25 keyword search.
-Final score = 70% semantic + 30% keyword (both normalised to 0-1 before blending).
+
+The final value is a query-relative *ranking score*, not a probability or a
+confidence estimate for a generated answer.  FAISS and BM25 have different
+score scales, so their candidate scores are min-max normalised separately
+before applying the configured ranking weights.
 """
 
 import logging
@@ -10,6 +14,35 @@ from typing import List, Tuple
 from rank_bm25 import BM25Okapi
 
 logger = logging.getLogger(__name__)
+
+
+# Ranking weights only. They do not express answer correctness probability.
+SEMANTIC_RANKING_WEIGHT = 0.7
+KEYWORD_RANKING_WEIGHT = 0.3
+
+
+def _min_max_normalize(scores: List[float]) -> List[float]:
+    """Normalise one retrieval channel's candidate scores to ``[0, 1]``.
+
+    FAISS cosine similarity may legitimately be zero or negative, therefore
+    dividing by the maximum score is not valid.  Per-query min-max
+    normalisation is monotonic: it preserves the ordering of candidates while
+    putting cosine similarity and BM25 on a common scale for rank fusion.
+
+    When only one candidate is present, or all candidates tie, every candidate
+    receives ``1.0``.  That represents an unresolved tie within this channel,
+    not an absolute relevance probability.
+    """
+    if not scores:
+        return []
+
+    low = min(scores)
+    high = max(scores)
+    if high == low:
+        return [1.0] * len(scores)
+
+    span = high - low
+    return [(score - low) / span for score in scores]
 
 
 class HybridRetriever:
@@ -48,17 +81,19 @@ class HybridRetriever:
         if effective_k == 0:
             return [], []
 
-        distances, indices = faiss_index.search(query_embedding, effective_k)
+        similarities, indices = faiss_index.search(query_embedding, effective_k)
 
         chunks = []
         scores = []
-        for dist, idx in zip(distances[0], indices[0]):
+        for score, idx in zip(similarities[0], indices[0]):
             if idx == -1 or idx >= len(self._chunks):
                 continue
             if filter_doc_id and self._doc_ids[idx] != filter_doc_id:
                 continue
             chunks.append(self._chunks[idx])
-            scores.append(1.0 / (1.0 + float(dist)))
+            # IndexFlatIP over L2-normalised embeddings returns cosine
+            # similarity.  Preserve that raw semantic relevance signal.
+            scores.append(float(score))
             if len(chunks) >= top_k:
                 break
 
@@ -99,18 +134,20 @@ class HybridRetriever:
         sem_chunks, sem_scores = self.search_semantic(query_embedding, faiss_index, top_k=5, filter_doc_id=filter_doc_id)
         kw_chunks, kw_scores = self.search_keyword(query_text, top_k=5, filter_doc_id=filter_doc_id)
 
-        # Normalise both score sets to 0-1
-        max_sem = max(sem_scores) if sem_scores else 1.0
-        norm_sem = {c: s / max_sem for c, s in zip(sem_chunks, sem_scores)}
-
-        max_kw = max(kw_scores) if kw_scores else 1.0
-        norm_kw = {c: s / max_kw for c, s in zip(kw_chunks, kw_scores)}
+        # The channels use incompatible raw scales (cosine and BM25).  Apply
+        # monotonic, per-query normalisation for rank fusion; these values are
+        # not calibrated probabilities.
+        norm_sem = dict(zip(sem_chunks, _min_max_normalize(sem_scores)))
+        norm_kw = dict(zip(kw_chunks, _min_max_normalize(kw_scores)))
 
         all_chunks = set(sem_chunks) | set(kw_chunks)
 
-        # Blend: 70% semantic + 30% keyword
+        # Blend ranking signals only; this is not answer confidence.
         final_scores = {
-            chunk: (norm_sem.get(chunk, 0.0) * 0.7) + (norm_kw.get(chunk, 0.0) * 0.3)
+            chunk: (
+                norm_sem.get(chunk, 0.0) * SEMANTIC_RANKING_WEIGHT
+                + norm_kw.get(chunk, 0.0) * KEYWORD_RANKING_WEIGHT
+            )
             for chunk in all_chunks
         }
 

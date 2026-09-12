@@ -104,9 +104,10 @@ class Settings(BaseSettings):
     CHUNK_SIZE: int = 2000
     CHUNK_OVERLAP: int = 200
 
-    # Header detection
+    # Header detection. 0.60 accepts guarded ALL-CAPS and title-case academic
+    # headings; these are structural chunking hints, not model confidence.
     HEADER_DETECTION_ENABLED: bool = True
-    HEADER_CONFIDENCE_THRESHOLD: float = 0.75
+    HEADER_CONFIDENCE_THRESHOLD: float = 0.60
 
     # ── Cross-Encoder Reranker ───────────────────────────────────────────── #
     # Reranking runs AFTER hybrid retrieval. Stage 1 retrieves RERANKER_TOP_N

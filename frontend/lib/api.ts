@@ -49,6 +49,8 @@ export interface RetrievedChunk {
   chunk_index?: number;
   block_type?: string;
   block_metadata?: Record<string, any>;
+  relevance_score?: number;
+  /** @deprecated Use relevance_score; this is not answer-confidence. */
   confidence_score?: number;
   source_label?: string;
 }
@@ -57,7 +59,10 @@ export interface AskResponse {
   answer: string;
   sources?: string[];
   source_chunks?: RetrievedChunk[];
+  relevance_score?: number;
+  /** @deprecated Use relevance_score; this is not answer-confidence. */
   confidence?: number;
+  /** @deprecated Use relevance_score; this is not answer-confidence. */
   confidence_score?: number;
   doc_ids_used?: string[];
   chunks_used?: any[];

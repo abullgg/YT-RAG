@@ -19,7 +19,7 @@ interface Message {
   id: string;
   role: 'user' | 'ai';
   content: string;
-  confidence?: number;
+  relevanceScore?: number;
   sources?: string[];
 }
 
@@ -98,7 +98,7 @@ function SourceChip({ index, text }: { index: number; text: string }) {
 // AI message bubble
 // ─────────────────────────────────────────────────────────────
 function AiBubble({ msg }: { msg: Message }) {
-  const pct = msg.confidence !== undefined ? Math.round(msg.confidence * 100) : null;
+  const pct = msg.relevanceScore !== undefined ? Math.round(msg.relevanceScore * 100) : null;
   return (
     <div className="msg-row ai">
       <div className="msg-avatar ai">AI</div>
@@ -108,7 +108,7 @@ function AiBubble({ msg }: { msg: Message }) {
         </div>
         {pct !== null && (
           <span className={`conf-badge${pct >= 70 ? ' high' : ''}`}>
-            {pct}% confidence
+            {pct}% passage relevance
           </span>
         )}
         {msg.sources && msg.sources.length > 0 && (
@@ -278,7 +278,7 @@ export default function Home() {
         id: crypto.randomUUID(),
         role: 'ai',
         content: res.answer,
-        confidence: res.confidence,
+        relevanceScore: res.relevance_score ?? res.confidence,
         sources: res.sources,
       }]);
     } catch (e) {

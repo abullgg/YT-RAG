@@ -9,7 +9,7 @@ Pipeline
 1. embed_query()            -- BGE query prefix applied
 2. hybrid_search_with_metadata() -- FAISS cosine + BM25 fused; returns rich metadata
 3. CrossEncoderReranker     -- scores (query, chunk) pairs; keeps top_k best
-4. Context budget trimming  -- remove lowest-confidence chunks if over char limit
+4. Context budget trimming  -- remove lowest-relevance chunks if over char limit
 5. Build context            -- join top_k chunks with source labels
 6. LLMService               -- grounded answer generation via Ollama
 7. Return AskResponse       -- includes rich source_chunks + diagnostics
@@ -58,7 +58,7 @@ def _trim_to_budget(
     max_chars: int,
 ) -> List[Dict[str, Any]]:
     """
-    Remove lowest-confidence chunks (from the tail) until the combined text
+    Remove lowest-relevance chunks (from the tail) until the combined text
     fits within *max_chars*. Returns the trimmed list.
     """
     total = sum(len(c.get("text", "")) for c in rich_chunks)
@@ -96,6 +96,8 @@ def _to_retrieved_chunk(entry: Dict[str, Any], score: float) -> RetrievedChunk:
         chunk_index=entry.get("chunk_index", 0),
         block_type=entry.get("block_type", "text"),
         block_metadata=entry.get("block_metadata"),
+        relevance_score=round(score, 4),
+        # Backward compatibility only: this is relevance, not answer confidence.
         confidence_score=round(score, 4),
         source_label=entry.get("source_label") or format_source_label(headers),
     )
@@ -147,13 +149,16 @@ async def ask_question(request: AskRequest) -> AskResponse:
 
     try:
         # ── Step 1: Embed the query ─────────────────────────────────────────
-        query_embedding: np.ndarray = state.embedding_service.embed_query(request.question)
+        query_embedding: np.ndarray = await asyncio.to_thread(
+            state.embedding_service.embed_query, request.question
+        )
 
         # ── Step 2: Hybrid retrieval (Stage 1) ──────────────────────────────
         retrieve_k: int = settings.RERANKER_TOP_N if state.reranker else request.top_k
 
         # Use the metadata-rich search path
-        rich_candidates: List[Dict[str, Any]] = state.retrieval_service.hybrid_search_with_metadata(
+        rich_candidates: List[Dict[str, Any]] = await asyncio.to_thread(
+            state.retrieval_service.hybrid_search_with_metadata,
             query_embedding=query_embedding,
             query_text=request.question,
             faiss_index=state.faiss_index,
@@ -167,6 +172,7 @@ async def ask_question(request: AskRequest) -> AskResponse:
                 answer="No relevant information was found in the indexed documents.",
                 sources=[],
                 source_chunks=[],
+                relevance_score=0.0,
                 confidence=0.0,
                 context_chars_used=0,
                 context_budget_remaining=max_context_chars,
@@ -213,6 +219,7 @@ async def ask_question(request: AskRequest) -> AskResponse:
                        "Try increasing max_context_chars.",
                 sources=[],
                 source_chunks=[],
+                relevance_score=0.0,
                 confidence=0.0,
                 context_chars_used=0,
                 context_budget_remaining=max_context_chars,
@@ -234,27 +241,30 @@ async def ask_question(request: AskRequest) -> AskResponse:
 
         # ── Step 6: Generate answer ──────────────────────────────────────────
         llm = _get_llm_service()
-        answer: str = llm.generate_answer(
+        answer: str = await asyncio.to_thread(
+            llm.generate_answer,
             question=request.question,
             context=context,
         )
 
-        max_confidence: float = round(
-            max((sc.confidence_score for sc in source_chunks), default=0.0), 4
+        max_relevance_score: float = round(
+            max((sc.relevance_score for sc in source_chunks), default=0.0), 4
         )
 
         # ── Step 7: Diagnostics ──────────────────────────────────────────────
         logger.info(
             "Retrieval complete — top_k=%d, context_chars=%d, budget_remaining=%d, "
-            "max_confidence=%.4f",
-            len(source_chunks), context_chars_used, context_budget_remaining, max_confidence,
+            "max_relevance_score=%.4f",
+            len(source_chunks), context_chars_used, context_budget_remaining, max_relevance_score,
         )
 
         return AskResponse(
             answer=answer,
             sources=[sc.text for sc in source_chunks],   # backward-compat plain list
             source_chunks=source_chunks,
-            confidence=max_confidence,
+            relevance_score=max_relevance_score,
+            # Backward compatibility only: this is relevance, not answer confidence.
+            confidence=max_relevance_score,
             context_chars_used=context_chars_used,
             context_budget_remaining=context_budget_remaining,
         )

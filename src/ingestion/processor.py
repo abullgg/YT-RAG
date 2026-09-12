@@ -187,14 +187,46 @@ class DocumentProcessor:
         return "\n".join(lines)
 
     @staticmethod
+    def _extract_prose_outside_tables(page: Any, table_bboxes: List[tuple]) -> str:
+        """Extract page prose after excluding characters inside table boxes.
+
+        ``pdfplumber.Page.extract_text`` includes glyphs from detected tables.
+        Filtering those glyphs before text extraction prevents a table from
+        entering the document once as unstructured prose and again as Markdown.
+        A character's centre point is used so border-adjacent prose is retained.
+        """
+        if not table_bboxes:
+            return page.extract_text() or ""
+
+        def keep_object(obj: Dict[str, Any]) -> bool:
+            # Text extraction consumes character objects. Keep other layout
+            # objects unchanged to avoid altering pdfplumber's page internals.
+            if obj.get("object_type") != "char":
+                return True
+
+            char_x = (obj["x0"] + obj["x1"]) / 2
+            char_top = (obj["top"] + obj["bottom"]) / 2
+            inside_table = any(
+                left <= char_x <= right and top <= char_top <= bottom
+                for left, top, right, bottom in table_bboxes
+            )
+            return not inside_table
+
+        return page.filter(keep_object).extract_text() or ""
+
+    @staticmethod
     def _extract_pdf(raw_bytes: bytes, filename: str) -> str:
         """
         Parse PDF bytes and return the full text content.
 
         Strategy (per page):
-        1. ``page.extract_text()``  — always runs first; preserves prose flow.
-        2. ``page.extract_tables()`` — additionally extracts tables as Markdown
-           and appends them after the page text. Failures are caught and ignored.
+        1. Find table bounding boxes and extract each table once as Markdown.
+        2. Extract prose with characters inside those boxes excluded.
+        3. Append the Markdown table block after the prose for compatibility
+           with the established ingestion flow.
+
+        If layout-aware table extraction fails for a page, prose extraction
+        falls back safely to the previous behaviour for that page.
         """
         try:
             pages_text: List[str] = []
@@ -206,35 +238,59 @@ class DocumentProcessor:
                 for page_num, page in enumerate(pdf.pages):
                     parts: List[str] = []
 
-                    # 1. Prose text
-                    page_text = page.extract_text() or ""
+                    # 1. Extract tables first, retaining only successfully
+                    # converted tables as exclusion regions.
+                    table_mds: List[str] = []
+                    table_bboxes: List[tuple] = []
+                    try:
+                        for table in page.find_tables() or []:
+                            md = DocumentProcessor._table_to_markdown(table.extract())
+                            if md:
+                                table_mds.append(md)
+                                table_bboxes.append(table.bbox)
+                    except Exception as tbl_exc:
+                        # Preserve upload availability for PDFs whose layout
+                        # cannot be analysed; do not exclude any prose region.
+                        logger.warning(
+                            "Page %d/%d '%s': layout-aware table extraction skipped (%s)",
+                            page_num + 1, num_pages, filename, tbl_exc,
+                        )
+                        table_mds = []
+                        table_bboxes = []
+
+                    # 2. Prose text excluding the successfully extracted table
+                    # regions. This removes the former duplicate/garbled table
+                    # copy without changing non-table extraction behaviour.
+                    try:
+                        page_text = DocumentProcessor._extract_prose_outside_tables(
+                            page, table_bboxes
+                        )
+                    except Exception as prose_exc:
+                        # A filtered view is optional. If it is unsupported by
+                        # an unusual PDF object, retain the historical prose
+                        # extraction and suppress the separate table block so
+                        # this fallback cannot reintroduce duplicate content.
+                        logger.warning(
+                            "Page %d/%d '%s': table-region filtering skipped (%s)",
+                            page_num + 1, num_pages, filename, prose_exc,
+                        )
+                        page_text = page.extract_text() or ""
+                        table_mds = []
                     if page_text.strip():
                         parts.append(page_text)
                         logger.debug(
-                            "Page %d/%d '%s': %d chars (text)",
+                            "Page %d/%d '%s': %d chars (prose, table regions excluded)",
                             page_num + 1, num_pages, filename, len(page_text),
                         )
 
-                    # 2. Additive table extraction
-                    try:
-                        tables = page.extract_tables() or []
-                        table_mds: List[str] = []
-                        for table in tables:
-                            md = DocumentProcessor._table_to_markdown(table)
-                            if md:
-                                table_mds.append(md)
-
-                        if table_mds:
-                            block = "[TABLE]\n" + "\n\n[TABLE]\n".join(table_mds)
-                            parts.append(block)
-                            logger.debug(
-                                "Page %d/%d '%s': %d table(s) extracted as markdown",
-                                page_num + 1, num_pages, filename, len(table_mds),
-                            )
-                    except Exception as tbl_exc:
-                        logger.warning(
-                            "Page %d/%d '%s': table extraction skipped (%s)",
-                            page_num + 1, num_pages, filename, tbl_exc,
+                    # 3. Keep existing downstream format: tables are emitted
+                    # as Markdown blocks, now without duplicate prose glyphs.
+                    if table_mds:
+                        block = "[TABLE]\n" + "\n\n[TABLE]\n".join(table_mds)
+                        parts.append(block)
+                        logger.debug(
+                            "Page %d/%d '%s': %d table(s) extracted as markdown",
+                            page_num + 1, num_pages, filename, len(table_mds),
                         )
 
                     if parts:

@@ -40,7 +40,7 @@ class RetrievedChunk(BaseModel):
     """
     Full metadata for a single retrieved passage.
     Returned by the updated /ask endpoint so the frontend can display
-    section breadcrumbs, confidence scores, and block-type badges.
+    section breadcrumbs, relevance scores, and block-type badges.
     """
     position: int = Field(default=0, description="FAISS vector position")
     doc_id: str
@@ -52,7 +52,19 @@ class RetrievedChunk(BaseModel):
     chunk_index: int = 0
     block_type: str = "text"          # "text" | "atomic_block"
     block_metadata: Optional[Dict[str, Any]] = None
-    confidence_score: float = 0.0
+    relevance_score: float = Field(
+        default=0.0,
+        description=(
+            "Retrieval/reranker relevance signal, not a probability that the "
+            "generated answer is correct."
+        ),
+    )
+    # Temporary compatibility alias for clients using the former name.
+    confidence_score: float = Field(
+        default=0.0,
+        description="Deprecated alias for relevance_score; not answer confidence.",
+        deprecated=True,
+    )
     source_label: str = "Document Root"
 
 
@@ -97,16 +109,25 @@ class AskRequest(BaseModel):
         description=(
             "Soft character ceiling for combined context sent to the LLM. "
             "Overrides the server default (MAX_CONTEXT_CHARS). "
-            "Lowest-confidence chunks are trimmed if the budget is exceeded."
+            "Lowest-relevance chunks are trimmed if the budget is exceeded."
         ),
     )
 
 
 class AskResponse(BaseModel):
-    """Response schema for POST /ask."""
+    """Response schema for POST /ask; scores are relevance signals, not confidence probabilities."""
     answer: str
     sources: List[str]                        # Plain text list (backward compat)
     source_chunks: List[RetrievedChunk] = []  # Rich chunks with metadata
-    confidence: float
+    relevance_score: float = Field(
+        default=0.0,
+        description="Best retrieved relevance signal; not answer correctness probability.",
+    )
+    # Temporary compatibility alias. Clients should migrate to relevance_score.
+    confidence: float = Field(
+        default=0.0,
+        description="Deprecated alias for relevance_score; not answer confidence.",
+        deprecated=True,
+    )
     context_chars_used: int = 0               # Diagnostic: total chars in context
     context_budget_remaining: int = 0         # Diagnostic: budget left over
