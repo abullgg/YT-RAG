@@ -13,6 +13,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 # keeps this unit test independent of optional application dependencies.
 config = types.ModuleType("src.core.config")
 config.settings = types.SimpleNamespace()
+config.CHUNK_SIZE_PRESETS = {"default": 2000}
+config.DocType = str
+config.RetrievalConfig = object
 sys.modules.setdefault("src.core.config", config)
 
 from src.core.header_detector import HeaderDetector

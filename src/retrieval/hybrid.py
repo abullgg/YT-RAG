@@ -7,6 +7,9 @@ The final value is a query-relative *ranking score*, not a probability or a
 confidence estimate for a generated answer.  FAISS and BM25 have different
 score scales, so their candidate scores are min-max normalised separately
 before applying the configured ranking weights.
+
+Positions (integer indices matching FAISS and chunk store) are preserved
+throughout retrieval to prevent metadata collisions on repeated chunk texts.
 """
 
 import logging
@@ -71,85 +74,88 @@ class HybridRetriever:
         self._bm25 = BM25Okapi(tokenized_corpus)
         logger.info("Built BM25 index over %d chunks.", len(self._chunks))
 
-    def search_semantic(self, query_embedding, faiss_index, top_k=5, filter_doc_id=None) -> Tuple[List[str], List[float]]:
-        """Run FAISS vector search and return (chunks, scores)."""
+    def search_semantic(
+        self, query_embedding, faiss_index, top_k=5, filter_doc_id=None
+    ) -> List[Tuple[int, float]]:
+        """Run FAISS vector search and return list of (position, similarity_score)."""
         import numpy as np
         if query_embedding.ndim == 1:
             query_embedding = query_embedding.reshape(1, -1)
 
         effective_k = faiss_index.ntotal if filter_doc_id else min(top_k, faiss_index.ntotal)
         if effective_k == 0:
-            return [], []
+            return []
 
         similarities, indices = faiss_index.search(query_embedding, effective_k)
 
-        chunks = []
-        scores = []
+        results: List[Tuple[int, float]] = []
         for score, idx in zip(similarities[0], indices[0]):
             if idx == -1 or idx >= len(self._chunks):
                 continue
             if filter_doc_id and self._doc_ids[idx] != filter_doc_id:
                 continue
-            chunks.append(self._chunks[idx])
-            # IndexFlatIP over L2-normalised embeddings returns cosine
-            # similarity.  Preserve that raw semantic relevance signal.
-            scores.append(float(score))
-            if len(chunks) >= top_k:
+            # IndexFlatIP over L2-normalised embeddings returns cosine similarity.
+            results.append((int(idx), float(score)))
+            if len(results) >= top_k:
                 break
 
-        return chunks, scores
+        return results
 
-    def search_keyword(self, query_text: str, top_k=5, filter_doc_id=None) -> Tuple[List[str], List[float]]:
-        """Run BM25 keyword search and return (chunks, scores)."""
+    def search_keyword(
+        self, query_text: str, top_k=5, filter_doc_id=None
+    ) -> List[Tuple[int, float]]:
+        """Run BM25 keyword search and return list of (position, bm25_score)."""
         if not self._bm25 or not query_text:
-            return [], []
+            return []
 
         tokenized_query = query_text.lower().split()
         doc_scores = self._bm25.get_scores(tokenized_query)
         top_indices = sorted(range(len(doc_scores)), key=lambda i: doc_scores[i], reverse=True)
 
-        chunks = []
-        scores = []
+        results: List[Tuple[int, float]] = []
         for idx in top_indices:
             if doc_scores[idx] > 0:
                 if filter_doc_id and self._doc_ids[idx] != filter_doc_id:
                     continue
-                chunks.append(self._chunks[idx])
-                scores.append(float(doc_scores[idx]))
-                if len(chunks) >= top_k:
+                results.append((int(idx), float(doc_scores[idx])))
+                if len(results) >= top_k:
                     break
 
-        return chunks, scores
+        return results
 
-    def hybrid_search(self, query_embedding, query_text: str, faiss_index, top_k=3, filter_doc_id=None) -> Tuple[List[str], List[float]]:
+    def hybrid_search(
+        self, query_embedding, query_text: str, faiss_index, top_k=3, filter_doc_id=None
+    ) -> List[Tuple[int, float]]:
         """
-        Run semantic + keyword search and return top-k results by blended score.
-
+        Run semantic + keyword search and return top-k results as (position, blended_score).
+        Maintains stable chunk integer positions throughout rank fusion.
         Falls back to pure semantic search if BM25 index is not available.
         """
         if not self._bm25 or not self._chunks:
             logger.warning("BM25 index missing — falling back to semantic search.")
             return self.search_semantic(query_embedding, faiss_index, top_k=top_k, filter_doc_id=filter_doc_id)
 
-        sem_chunks, sem_scores = self.search_semantic(query_embedding, faiss_index, top_k=5, filter_doc_id=filter_doc_id)
-        kw_chunks, kw_scores = self.search_keyword(query_text, top_k=5, filter_doc_id=filter_doc_id)
+        sem_results = self.search_semantic(query_embedding, faiss_index, top_k=max(5, top_k * 2), filter_doc_id=filter_doc_id)
+        kw_results = self.search_keyword(query_text, top_k=max(5, top_k * 2), filter_doc_id=filter_doc_id)
 
-        # The channels use incompatible raw scales (cosine and BM25).  Apply
-        # monotonic, per-query normalisation for rank fusion; these values are
-        # not calibrated probabilities.
-        norm_sem = dict(zip(sem_chunks, _min_max_normalize(sem_scores)))
-        norm_kw = dict(zip(kw_chunks, _min_max_normalize(kw_scores)))
+        sem_pos = [item[0] for item in sem_results]
+        sem_scores = [item[1] for item in sem_results]
+        kw_pos = [item[0] for item in kw_results]
+        kw_scores = [item[1] for item in kw_results]
 
-        all_chunks = set(sem_chunks) | set(kw_chunks)
+        norm_sem = dict(zip(sem_pos, _min_max_normalize(sem_scores)))
+        norm_kw = dict(zip(kw_pos, _min_max_normalize(kw_scores)))
 
-        # Blend ranking signals only; this is not answer confidence.
+        all_pos = set(sem_pos) | set(kw_pos)
+
+        # Blend ranking signals by stable vector position ID
         final_scores = {
-            chunk: (
-                norm_sem.get(chunk, 0.0) * SEMANTIC_RANKING_WEIGHT
-                + norm_kw.get(chunk, 0.0) * KEYWORD_RANKING_WEIGHT
+            pos: (
+                norm_sem.get(pos, 0.0) * SEMANTIC_RANKING_WEIGHT
+                + norm_kw.get(pos, 0.0) * KEYWORD_RANKING_WEIGHT
             )
-            for chunk in all_chunks
+            for pos in all_pos
         }
 
         sorted_items = sorted(final_scores.items(), key=lambda x: x[1], reverse=True)[:top_k]
-        return [item[0] for item in sorted_items], [item[1] for item in sorted_items]
+        return sorted_items

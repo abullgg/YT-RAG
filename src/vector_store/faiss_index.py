@@ -6,8 +6,8 @@ Manages a FAISS IndexFlatIP (inner product) index for dense-vector similarity se
 Embeddings are L2-normalised at encode time, so inner product equals cosine
 similarity. Scores fall in the range (-1, 1] where 1.0 is a perfect match.
 
-Chunk Store Schema (Fix 3)
-~~~~~~~~~~~~~~~~~~~~~~~~~~
+Chunk Store Schema
+~~~~~~~~~~~~~~~~~~
 Each FAISS vector position maps to a rich metadata dict:
 
     _chunk_store: Dict[int, Dict[str, Any]] = {
@@ -15,20 +15,25 @@ Each FAISS vector position maps to a rich metadata dict:
             "doc_id":             str,
             "text":               str,
             "headers":            {"H1": str|None, "H2": str|None, "H3": str|None},
-            "page_num":           int|None,   # PDF pages only (future)
-            "chunk_index":        int,         # position within document
-            "block_type":         str,         # "text" | "atomic_block"
-            "block_metadata":     dict|None,   # e.g. {type:"table", format:"markdown"}
+            "page_num":           int|None,
+            "chunk_index":        int,
+            "block_type":         str,         # "text" | "atomic_block" | "transcript"
+            "block_metadata":     dict|None,
+            "source_type":        str,         # "document" | "youtube"
+            "video_id":           str|None,
+            "video_url":          str|None,
+            "video_title":        str|None,
+            "channel":            str|None,
+            "start_seconds":      float|None,
+            "end_seconds":        float|None,
+            "timestamp_url":      str|None,
+            "transcript_origin":  str|None,
+            "language":           str|None,
+            "source_label":       str|None,
             "original_char_count": int,
             "char_position_in_doc": int,
         }
     }
-
-Backward compatibility
-~~~~~~~~~~~~~~~~~~~~~~
-Old pickled chunk stores contain (doc_id, text) tuples. The
-``_migrate_legacy_entry()`` method detects and upgrades them transparently so
-existing ``./data/chunks.pkl`` files continue to work without re-indexing.
 """
 
 from __future__ import annotations
@@ -50,11 +55,29 @@ ChunkMetadata = Dict[str, Any]
 
 def _migrate_legacy_entry(entry: Any) -> ChunkMetadata:
     """
-    Convert a legacy ``(doc_id, chunk_text)`` tuple to the new dict schema.
-    Called lazily whenever an old-format entry is encountered in the chunk store.
+    Convert a legacy entry or ensure modern fields exist in a chunk dict.
     """
     if isinstance(entry, dict):
-        return entry  # already new format
+        # Ensure all modern keys are present
+        entry.setdefault("headers", {"H1": None, "H2": None, "H3": None})
+        entry.setdefault("page_num", None)
+        entry.setdefault("chunk_index", 0)
+        entry.setdefault("block_type", "text")
+        entry.setdefault("block_metadata", None)
+        entry.setdefault("source_type", "document")
+        entry.setdefault("video_id", None)
+        entry.setdefault("video_url", None)
+        entry.setdefault("video_title", None)
+        entry.setdefault("channel", None)
+        entry.setdefault("start_seconds", None)
+        entry.setdefault("end_seconds", None)
+        entry.setdefault("timestamp_url", None)
+        entry.setdefault("transcript_origin", None)
+        entry.setdefault("language", None)
+        entry.setdefault("source_label", None)
+        entry.setdefault("original_char_count", len(entry.get("text", "")))
+        entry.setdefault("char_position_in_doc", 0)
+        return entry
 
     if isinstance(entry, tuple) and len(entry) == 2:
         doc_id, text = entry
@@ -67,6 +90,17 @@ def _migrate_legacy_entry(entry: Any) -> ChunkMetadata:
             "chunk_index": 0,
             "block_type": "text",
             "block_metadata": None,
+            "source_type": "document",
+            "video_id": None,
+            "video_url": None,
+            "video_title": None,
+            "channel": None,
+            "start_seconds": None,
+            "end_seconds": None,
+            "timestamp_url": None,
+            "transcript_origin": None,
+            "language": None,
+            "source_label": None,
             "original_char_count": len(text),
             "char_position_in_doc": 0,
         }
@@ -81,6 +115,17 @@ def _migrate_legacy_entry(entry: Any) -> ChunkMetadata:
         "chunk_index": 0,
         "block_type": "text",
         "block_metadata": None,
+        "source_type": "document",
+        "video_id": None,
+        "video_url": None,
+        "video_title": None,
+        "channel": None,
+        "start_seconds": None,
+        "end_seconds": None,
+        "timestamp_url": None,
+        "transcript_origin": None,
+        "language": None,
+        "source_label": None,
         "original_char_count": 0,
         "char_position_in_doc": 0,
     }
@@ -95,12 +140,6 @@ def format_source_label(headers: Dict[str, Optional[str]]) -> str:
             → "Introduction > Background"
         {"H1": None, "H2": None, "H3": None}
             → "Document Root"
-
-    Args:
-        headers: Dict with keys H1, H2, H3 (values may be None).
-
-    Returns:
-        Formatted string suitable for display in the frontend.
     """
     parts = [h for h in [headers.get("H1"), headers.get("H2"), headers.get("H3")] if h]
     return " > ".join(parts) if parts else "Document Root"
@@ -109,9 +148,6 @@ def format_source_label(headers: Dict[str, Optional[str]]) -> str:
 class RetrievalService:
     """
     Wraps FAISS and pairs every indexed vector with its source metadata.
-
-    Args:
-        dimension: Embedding vector size. Must match the active embedding model.
     """
 
     def __init__(self, dimension: int = settings.EMBEDDING_DIMENSION) -> None:
@@ -127,28 +163,12 @@ class RetrievalService:
         self,
         embeddings: np.ndarray,
         doc_id: str,
-        chunks: List[Any],           # List[str] or List[ChunkResult]
+        chunks: List[Any],
         existing_index: Optional[faiss.IndexFlatIP] = None,
     ) -> faiss.IndexFlatIP:
         """
         Add embeddings to the FAISS index and record their source metadata.
-
-        Accepts either a list of plain strings (backward compat) or a list of
-        :class:`ChunkResult` objects from the new processor pipeline.
-
-        Creates a new IndexFlatIP if no existing index is provided.
-
-        Args:
-            embeddings:     2-D float32 array of shape (n, dimension).
-            doc_id:         ID of the document these chunks belong to.
-            chunks:         Original text chunks or ChunkResult objects.
-            existing_index: Existing FAISS index to append to. Creates new if None.
-
-        Returns:
-            The updated (or newly created) FAISS index.
-
-        Raises:
-            RetrievalError: If the add operation fails.
+        Accepts strings, ChunkResult objects, or transcript chunk dicts.
         """
         try:
             if existing_index is None:
@@ -162,7 +182,6 @@ class RetrievalService:
 
             for i, chunk in enumerate(chunks):
                 pos = start_pos + i
-                # Support both legacy plain strings and new ChunkResult objects
                 if isinstance(chunk, str):
                     self._chunk_store[pos] = {
                         "doc_id": doc_id,
@@ -172,21 +191,67 @@ class RetrievalService:
                         "chunk_index": i,
                         "block_type": "text",
                         "block_metadata": None,
+                        "source_type": "document",
+                        "video_id": None,
+                        "video_url": None,
+                        "video_title": None,
+                        "channel": None,
+                        "start_seconds": None,
+                        "end_seconds": None,
+                        "timestamp_url": None,
+                        "transcript_origin": None,
+                        "language": None,
+                        "source_label": None,
                         "original_char_count": len(chunk),
                         "char_position_in_doc": 0,
+                    }
+                elif isinstance(chunk, dict):
+                    # Dict chunk (e.g. from transcript processor)
+                    self._chunk_store[pos] = {
+                        "doc_id": doc_id,
+                        "text": chunk.get("text", ""),
+                        "headers": chunk.get("headers", {"H1": None, "H2": None, "H3": None}),
+                        "page_num": chunk.get("page_num"),
+                        "chunk_index": chunk.get("chunk_index", i),
+                        "block_type": chunk.get("block_type", "transcript"),
+                        "block_metadata": chunk.get("block_metadata"),
+                        "source_type": chunk.get("source_type", "youtube"),
+                        "video_id": chunk.get("video_id"),
+                        "video_url": chunk.get("video_url"),
+                        "video_title": chunk.get("video_title"),
+                        "channel": chunk.get("channel"),
+                        "start_seconds": chunk.get("start_seconds"),
+                        "end_seconds": chunk.get("end_seconds"),
+                        "timestamp_url": chunk.get("timestamp_url"),
+                        "transcript_origin": chunk.get("transcript_origin"),
+                        "language": chunk.get("language"),
+                        "source_label": chunk.get("source_label"),
+                        "original_char_count": chunk.get("original_char_count", len(chunk.get("text", ""))),
+                        "char_position_in_doc": chunk.get("char_position_in_doc", 0),
                     }
                 else:
                     # ChunkResult object
                     self._chunk_store[pos] = {
                         "doc_id": doc_id,
                         "text": chunk.text,
-                        "headers": chunk.headers,
+                        "headers": getattr(chunk, "headers", {"H1": None, "H2": None, "H3": None}),
                         "page_num": getattr(chunk, "page_num", None),
-                        "chunk_index": chunk.chunk_index,
-                        "block_type": chunk.block_type,
-                        "block_metadata": chunk.block_metadata,
-                        "original_char_count": chunk.original_char_count,
-                        "char_position_in_doc": chunk.char_position_in_doc,
+                        "chunk_index": getattr(chunk, "chunk_index", i),
+                        "block_type": getattr(chunk, "block_type", "text"),
+                        "block_metadata": getattr(chunk, "block_metadata", None),
+                        "source_type": getattr(chunk, "source_type", "document"),
+                        "video_id": getattr(chunk, "video_id", None),
+                        "video_url": getattr(chunk, "video_url", None),
+                        "video_title": getattr(chunk, "video_title", None),
+                        "channel": getattr(chunk, "channel", None),
+                        "start_seconds": getattr(chunk, "start_seconds", None),
+                        "end_seconds": getattr(chunk, "end_seconds", None),
+                        "timestamp_url": getattr(chunk, "timestamp_url", None),
+                        "transcript_origin": getattr(chunk, "transcript_origin", None),
+                        "language": getattr(chunk, "language", None),
+                        "source_label": getattr(chunk, "source_label", None),
+                        "original_char_count": getattr(chunk, "original_char_count", len(chunk.text)),
+                        "char_position_in_doc": getattr(chunk, "char_position_in_doc", 0),
                     }
 
             logger.info(
@@ -213,19 +278,6 @@ class RetrievalService:
     ) -> List[Dict[str, Any]]:
         """
         Find the top-k most similar chunks to a query embedding.
-
-        Args:
-            query_embedding: 1-D or 2-D float32 query vector from embed_query().
-            faiss_index:     The FAISS index to search.
-            top_k:           Number of results to return.
-            filter_doc_id:   If set, only return chunks from this document.
-
-        Returns:
-            List of dicts with keys matching the chunk store schema plus
-            ``score`` and ``source_label``.
-
-        Raises:
-            RetrievalError: If the FAISS search fails.
         """
         try:
             if query_embedding.ndim == 1:
@@ -256,11 +308,12 @@ class RetrievalService:
                 if filter_doc_id and entry["doc_id"] != filter_doc_id:
                     continue
 
+                source_label = entry.get("source_label") or format_source_label(entry.get("headers", {}))
                 result = {
                     **entry,
                     "position": int(idx),
                     "score": round(float(score), 4),
-                    "source_label": format_source_label(entry.get("headers", {})),
+                    "source_label": source_label,
                 }
                 results.append(result)
                 logger.debug(
@@ -278,15 +331,13 @@ class RetrievalService:
             raise RetrievalError(f"FAISS search failed: {exc}") from exc
 
     # ------------------------------------------------------------------ #
-    #  BM25 support
+    #  BM25 corpus helper
     # ------------------------------------------------------------------ #
 
     def get_all_chunks(self) -> List[Tuple[str, str]]:
         """
         Return all (doc_id, text) pairs ordered by FAISS index position.
         Used by HybridRetriever to build the BM25 corpus.
-
-        Handles both legacy tuple entries and new dict entries.
         """
         result = []
         for i in range(len(self._chunk_store)):
@@ -312,19 +363,23 @@ class RetrievalService:
     ) -> Tuple[List[str], List[float]]:
         """
         Run hybrid search (FAISS + BM25) via HybridRetriever.
-        Falls back to pure semantic search if BM25 is unavailable.
-
         Returns:
             Tuple of (chunk_texts, scores).
         """
         try:
-            chunks, scores = hybrid_retriever.hybrid_search(
+            pos_scores = hybrid_retriever.hybrid_search(
                 query_embedding=query_embedding,
                 query_text=query_text,
                 faiss_index=faiss_index,
                 top_k=top_k,
                 filter_doc_id=filter_doc_id,
             )
+            chunks = [
+                self._chunk_store[pos]["text"]
+                for pos, _ in pos_scores
+                if pos in self._chunk_store
+            ]
+            scores = [score for _, score in pos_scores]
             return chunks, scores
         except Exception as exc:
             logger.error("Hybrid search failed: %s — falling back to semantic", exc)
@@ -345,12 +400,11 @@ class RetrievalService:
         filter_doc_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
-        Like hybrid_search() but returns the full metadata dict per chunk
-        instead of just (text, score) tuples. Used by the /ask endpoint when
-        the RetrievedChunk response schema is active.
+        Like hybrid_search() but returns the full metadata dict per chunk.
+        Uses stable vector positions throughout to avoid text collisions.
         """
         try:
-            chunks, scores = hybrid_retriever.hybrid_search(
+            pos_scores = hybrid_retriever.hybrid_search(
                 query_embedding=query_embedding,
                 query_text=query_text,
                 faiss_index=faiss_index,
@@ -361,23 +415,25 @@ class RetrievalService:
             logger.error("Hybrid search failed: %s — falling back to semantic", exc)
             return self.search(query_embedding, faiss_index, top_k, filter_doc_id=filter_doc_id)
 
-        # Enrich each text result with its stored metadata
         rich_results: List[Dict[str, Any]] = []
-        for chunk_text, score in zip(chunks, scores):
-            # Look up the chunk in the store by text match (BM25 returns plain text)
-            meta = self._find_metadata_by_text(chunk_text, filter_doc_id)
+        for pos, score in pos_scores:
+            raw_entry = self._chunk_store.get(pos)
+            if raw_entry is None:
+                continue
+            meta = _migrate_legacy_entry(raw_entry)
+            source_label = meta.get("source_label") or format_source_label(meta.get("headers", {}))
             rich_results.append({
-                **(meta or {}),
-                "text": chunk_text,
+                **meta,
+                "position": pos,
                 "score": round(float(score), 4),
-                "source_label": format_source_label((meta or {}).get("headers", {})),
+                "source_label": source_label,
             })
         return rich_results
 
     def _find_metadata_by_text(
         self, text: str, filter_doc_id: Optional[str]
     ) -> Optional[Dict[str, Any]]:
-        """Reverse-lookup chunk store by text content (used for BM25 results)."""
+        """Reverse-lookup chunk store by text content (kept as helper)."""
         for entry in self._chunk_store.values():
             e = _migrate_legacy_entry(entry)
             if e["text"] == text:

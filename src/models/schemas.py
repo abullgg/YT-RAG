@@ -33,14 +33,14 @@ class ChunkResponse(BaseModel):
 
 
 # ------------------------------------------------------------------ #
-#  Rich chunk model (Fix 3)
+#  Rich chunk model
 # ------------------------------------------------------------------ #
 
 class RetrievedChunk(BaseModel):
     """
     Full metadata for a single retrieved passage.
-    Returned by the updated /ask endpoint so the frontend can display
-    section breadcrumbs, relevance scores, and block-type badges.
+    Returned by the /ask endpoint so the frontend can display
+    section breadcrumbs, video timestamps, relevance scores, and badges.
     """
     position: int = Field(default=0, description="FAISS vector position")
     doc_id: str
@@ -50,8 +50,21 @@ class RetrievedChunk(BaseModel):
     )
     page_num: Optional[int] = None
     chunk_index: int = 0
-    block_type: str = "text"          # "text" | "atomic_block"
+    block_type: str = "text"          # "text" | "atomic_block" | "transcript"
     block_metadata: Optional[Dict[str, Any]] = None
+
+    # Explicit Video / YouTube Metadata Fields
+    source_type: str = "document"     # "document" | "youtube"
+    video_id: Optional[str] = None
+    video_url: Optional[str] = None
+    video_title: Optional[str] = None
+    channel: Optional[str] = None
+    start_seconds: Optional[float] = None
+    end_seconds: Optional[float] = None
+    timestamp_url: Optional[str] = None
+    transcript_origin: Optional[str] = None # "creator" | "auto"
+    language: Optional[str] = None
+
     relevance_score: float = Field(
         default=0.0,
         description=(
@@ -93,6 +106,31 @@ class UploadResponse(BaseModel):
 
 
 # ------------------------------------------------------------------ #
+#  /videos/ingest
+# ------------------------------------------------------------------ #
+
+class VideoIngestRequest(BaseModel):
+    """Body schema for POST /videos/ingest."""
+    url: str = Field(..., min_length=1, description="YouTube video URL or Video ID")
+    reindex: bool = Field(default=False, description="Whether to force re-indexing if already indexed")
+
+
+class VideoIngestResponse(BaseModel):
+    """Response schema for POST /videos/ingest."""
+    document_id: str
+    video_id: str
+    video_title: str
+    channel: Optional[str] = None
+    estimated_duration: Optional[int] = None
+    status: str                       # "queued" | "processing" | "completed" | "failed"
+    stage: str                        # "fetching_captions" | "chunking" | "embedding" | "indexing" | "completed"
+    message: str
+    transcript_origin: Optional[str] = None # "creator" | "auto"
+    chunks_created: Optional[int] = 0
+    job_id: Optional[str] = None
+
+
+# ------------------------------------------------------------------ #
 #  /ask
 # ------------------------------------------------------------------ #
 
@@ -118,7 +156,7 @@ class AskResponse(BaseModel):
     """Response schema for POST /ask; scores are relevance signals, not confidence probabilities."""
     answer: str
     sources: List[str]                        # Plain text list (backward compat)
-    source_chunks: List[RetrievedChunk] = []  # Rich chunks with metadata
+    source_chunks: List[RetrievedChunk] = []  # Rich chunks with metadata & video timestamps
     relevance_score: float = Field(
         default=0.0,
         description="Best retrieved relevance signal; not answer correctness probability.",

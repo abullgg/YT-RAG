@@ -8,11 +8,11 @@ Pipeline
 --------
 1. embed_query()            -- BGE query prefix applied
 2. hybrid_search_with_metadata() -- FAISS cosine + BM25 fused; returns rich metadata
-3. CrossEncoderReranker     -- scores (query, chunk) pairs; keeps top_k best
+3. CrossEncoderReranker     -- scores (query, chunk) pairs; keeps top_k best preserving identity
 4. Context budget trimming  -- remove lowest-relevance chunks if over char limit
-5. Build context            -- join top_k chunks with source labels
+5. Build context            -- join top_k chunks with source labels and timestamps
 6. LLMService               -- grounded answer generation via Ollama
-7. Return AskResponse       -- includes rich source_chunks + diagnostics
+7. Return AskResponse       -- includes rich source_chunks with video timestamps + diagnostics
 
 Step 3 is skipped when RERANKER_ENABLED=false in config / .env.
 Step 4 respects the per-request max_context_chars override or the server default.
@@ -96,6 +96,16 @@ def _to_retrieved_chunk(entry: Dict[str, Any], score: float) -> RetrievedChunk:
         chunk_index=entry.get("chunk_index", 0),
         block_type=entry.get("block_type", "text"),
         block_metadata=entry.get("block_metadata"),
+        source_type=entry.get("source_type", "document"),
+        video_id=entry.get("video_id"),
+        video_url=entry.get("video_url"),
+        video_title=entry.get("video_title"),
+        channel=entry.get("channel"),
+        start_seconds=entry.get("start_seconds"),
+        end_seconds=entry.get("end_seconds"),
+        timestamp_url=entry.get("timestamp_url"),
+        transcript_origin=entry.get("transcript_origin"),
+        language=entry.get("language"),
         relevance_score=round(score, 4),
         # Backward compatibility only: this is relevance, not answer confidence.
         confidence_score=round(score, 4),
@@ -125,13 +135,13 @@ async def ask_question(request: AskRequest) -> AskResponse:
     if not state.indexed_documents:
         raise HTTPException(
             status_code=400,
-            detail="No documents have been indexed yet. Upload a document first.",
+            detail="No documents have been indexed yet. Upload a document or ingest a video first.",
         )
 
     if state.faiss_index is None or state.faiss_index.ntotal == 0:
         raise HTTPException(
             status_code=400,
-            detail="The FAISS index is empty. Upload a document first.",
+            detail="The FAISS index is empty. Upload a document or ingest a video first.",
         )
 
     if state.embedding_service is None:
@@ -156,7 +166,7 @@ async def ask_question(request: AskRequest) -> AskResponse:
         # ── Step 2: Hybrid retrieval (Stage 1) ──────────────────────────────
         retrieve_k: int = settings.RERANKER_TOP_N if state.reranker else request.top_k
 
-        # Use the metadata-rich search path
+        # Use the metadata-rich search path (keyed on stable vector position)
         rich_candidates: List[Dict[str, Any]] = await asyncio.to_thread(
             state.retrieval_service.hybrid_search_with_metadata,
             query_embedding=query_embedding,
@@ -179,32 +189,18 @@ async def ask_question(request: AskRequest) -> AskResponse:
             )
 
         # ── Step 3: Cross-encoder reranking (Stage 2) ───────────────────────
-        candidate_texts = [c.get("text", "") for c in rich_candidates]
-
         if state.reranker:
-            ranked_pairs: List[Tuple[str, float]] = await asyncio.to_thread(
-                state.reranker.rerank,
+            # Preserves position & metadata dicts directly without text collisions
+            rich_candidates = await asyncio.to_thread(
+                state.reranker.rerank_candidates,
                 request.question,
-                candidate_texts,
+                rich_candidates,
                 request.top_k,
             )
-            # Re-order rich_candidates to match reranker output
-            text_to_entry: Dict[str, Dict[str, Any]] = {
-                c.get("text", ""): c for c in rich_candidates
-            }
-            rich_reranked: List[Dict[str, Any]] = []
-            reranked_scores: List[float] = []
-            for text, score in ranked_pairs:
-                entry = text_to_entry.get(text, {"text": text})
-                entry["score"] = score
-                rich_reranked.append(entry)
-                reranked_scores.append(score)
-
-            rich_candidates = rich_reranked
+            top_score = rich_candidates[0]["score"] if rich_candidates else 0.0
             logger.info(
                 "Reranking complete — %d candidates → %d chunks (top score=%.4f)",
-                retrieve_k, len(rich_candidates),
-                reranked_scores[0] if reranked_scores else 0.0,
+                retrieve_k, len(rich_candidates), top_score,
             )
         else:
             # No reranker — use hybrid scores as-is, truncate to top_k

@@ -17,16 +17,37 @@ export interface UploadResponse {
   job_id: string;
 }
 
+export interface VideoIngestResponse {
+  document_id: string;
+  video_id: string;
+  video_title: string;
+  channel?: string;
+  estimated_duration?: number;
+  status: string;
+  stage: string;
+  message: string;
+  transcript_origin?: 'creator' | 'auto';
+  chunks_created?: number;
+  job_id: string;
+}
+
 export interface StatusResponse {
   job_id: string;
   status: 'queued' | 'processing' | 'completed' | 'failed';
-  total_chunks: number;
-  processed_chunks: number;
+  stage?: string;
+  stage_message?: string;
+  total_chunks?: number;
+  processed_chunks?: number;
   progress?: number;
   doc_id?: string;
   filename?: string;
   file_type?: string;
   file_size?: number;
+  video_id?: string;
+  video_title?: string;
+  channel?: string;
+  estimated_duration?: number;
+  transcript_origin?: 'creator' | 'auto';
   message?: string;
   error?: string;
 }
@@ -48,7 +69,20 @@ export interface RetrievedChunk {
   page_num?: number;
   chunk_index?: number;
   block_type?: string;
-  block_metadata?: Record<string, any>;
+  block_metadata?: Record<string, unknown>;
+
+  // Video / YouTube Fields
+  source_type?: 'document' | 'youtube';
+  video_id?: string;
+  video_url?: string;
+  video_title?: string;
+  channel?: string;
+  start_seconds?: number;
+  end_seconds?: number;
+  timestamp_url?: string;
+  transcript_origin?: 'creator' | 'auto';
+  language?: string;
+
   relevance_score?: number;
   /** @deprecated Use relevance_score; this is not answer-confidence. */
   confidence_score?: number;
@@ -65,7 +99,7 @@ export interface AskResponse {
   /** @deprecated Use relevance_score; this is not answer-confidence. */
   confidence_score?: number;
   doc_ids_used?: string[];
-  chunks_used?: any[];
+  chunks_used?: unknown[];
   context_chars_used?: number;
   context_budget_remaining?: number;
 }
@@ -90,6 +124,22 @@ export async function uploadDocument(file: File): Promise<UploadResponse> {
   if (!res.ok) {
     const errorData = await res.json().catch(() => ({}));
     throw new Error(errorData.detail || `Upload failed with status ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function ingestVideo(url: string, reindex = false): Promise<VideoIngestResponse> {
+  const res = await fetch(`${API_BASE_URL}/videos/ingest`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ url, reindex }),
+  });
+
+  if (!res.ok) {
+    const errorData = await res.json().catch(() => ({}));
+    throw new Error(errorData.detail || `Video ingestion failed with status ${res.status}`);
   }
   return res.json();
 }

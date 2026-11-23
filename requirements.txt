@@ -17,3 +17,4 @@ numpy>=1.24.0
 tqdm>=4.66.0
 pytest==7.4.0
 rank-bm25==0.2.2
+youtube-transcript-api>=0.6.2

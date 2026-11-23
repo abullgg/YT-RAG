@@ -57,6 +57,7 @@ venv.bak/
 # ─────────────────────────────────────────────
 .env
 .env.*
+!.env.example
 .env.txt
 
 # ─────────────────────────────────────────────
@@ -107,8 +108,9 @@ frontend/.next/
 frontend/out/
 
 # ─────────────────────────────────────────────
-# Scratch / One-off scripts
+# Scratch / One-off scripts & local test files
 # ─────────────────────────────────────────────
+misc/
 app.py
 query_whales.py
 debug_test.py

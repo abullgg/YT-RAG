@@ -80,7 +80,7 @@ class Settings(BaseSettings):
 
     # ── LLM ─────────────────────────────────────────────────────────────── #
     OLLAMA_BASE_URL: str = "http://localhost:11434"
-    MODEL_NAME: str = "qwen3:4b"
+    MODEL_NAME: str = "qwen2.5:1.5b"
 
     # ── Embeddings ───────────────────────────────────────────────────────── #
     # Available BGE variants (EMBEDDING_DIMENSION must match the chosen model):

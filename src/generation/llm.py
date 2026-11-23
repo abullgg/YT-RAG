@@ -204,7 +204,8 @@ class LLMService:
                     {"role": "system", "content": _SYSTEM_PROMPT},
                     {"role": "user", "content": user_message},
                 ],
-                think=False,  # Qwen3: suppress chain-of-thought reasoning mode
+                think=False,  # Suppress reasoning mode if supported
+                options={"num_predict": 600},  # Cap tokens for fast CPU response
             )
 
             # Extract content from response — ollama-python >= 0.4.x returns

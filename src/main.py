@@ -70,8 +70,8 @@ hybrid_retriever.index_chunks(retrieval_service.get_all_chunks())
 app = FastAPI(
     title=settings.PROJECT_NAME,
     description=(
-        "Upload PDF / TXT documents, index them with FAISS, "
-        "and ask questions answered by Qwen3 via Ollama."
+        "Upload PDF / TXT documents or ingest YouTube video transcripts, "
+        "index them with FAISS + BM25, and ask questions with timestamped citations."
     ),
     version="1.0.0",
 )
@@ -89,10 +89,11 @@ app.add_middleware(
 )
 
 # Mount routers — imported here (after globals) to avoid circular-import issues
-from src.api.routes import upload, ask, health, status  # noqa: E402
+from src.api.routes import upload, ask, health, status, video  # noqa: E402
 
 app.include_router(health.router, tags=["monitoring"])
 app.include_router(upload.router, tags=["upload"])
+app.include_router(video.router, tags=["video"])
 app.include_router(ask.router, tags=["query"])
 app.include_router(status.router, tags=["status"])
 
@@ -105,10 +106,6 @@ async def _startup_event() -> None:
     Both are stored as module-level globals so every route module that does
     ``import src.main as state`` can reach them via
     ``state.embedding_service`` / ``state.reranker``.
-
-    Loading happens here (not at module-import time) so that:
-    - The models are available before the first request is served.
-    - They are never duplicated across route modules.
     """
     global embedding_service, reranker
 
